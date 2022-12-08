@@ -1,51 +1,58 @@
 #include "mbed.h"
 
+#define SPI_MOSI PA_7
+#define SPI_MISO PA_6
+#define SPI_SCLK PA_5
 
-#define I2C_SDA PB_11
-#define I2C_SCL PB_10
-uint8_t addr = 0x18;
+SPI spi(SPI_MOSI, SPI_MISO, SPI_SCLK); // mosi, miso, sclk
+DigitalOut cs(PC_3);
 
-I2C i2c(I2C_SDA,I2C_SCL);
+uint8_t write_buf[32]; 
+uint8_t read_buf[32];
+EventFlags flags;
+#define SPI_FLAG 1
 
-int getPressure();
+//The spi.transfer() function requires that the callback
+//provided to it takes an int parameter
+void spi_callback(int event) {
+  //deselect the sensor
+  cs=1;
+  flags.set(SPI_FLAG);
+  }
 
-
-int main() {
-
-	while(1) {
-		// put your main code here, to run repeatedly:
-		// get measurement
-		int reading = getPressure();
-		// print measurement
-		printf("Pressure: %d\n", reading);
-		// wait for 1sec between pressure readings
-		thread_sleep_for(1000);
-	}
+double getPressure() {
+		// Send 0xAA, 0x00, and 0x00 over spi bus to communicate w sensor
+      write_buf[0]=0xAA;
+	  write_buf[1] = 0x00;
+	  write_buf[2] = 0x00;
+      // Select the device by seting chip select low
+      cs=0;
+	  // Asynchronous transfer
+      spi.transfer(write_buf,3,read_buf,4,spi_callback,SPI_EVENT_COMPLETE );
+      // Wait for spi transfer to complete
+      flags.wait_all(SPI_FLAG);
+	  // evil bit hack to glue data together
+      unsigned long raw_data = ((long)read_buf[1] << 16) + ((long)read_buf[2] << 8) + ((long)read_buf[3]);
+	  double pressure = raw_data;
+		pressure -= 419430;
+    	pressure *= 300;
+    	pressure /= (3774874 - 419430);
+		return pressure;
 }
 
-int getPressure() {
-	char cmd[3];
-	cmd[0] = 0xAA;
-	cmd[1] = 0x00;
-	cmd[2] = 0x00;
-	char data[4];
-	// To store individual bytes
-	int err_code = i2c.write(0x30, cmd, 3, false); // send bytes
-	if (err_code != 0) {
-		printf("Error code: %d", err_code);
-		}
-	thread_sleep_for(10); // wait for the measurement for 5 ms
-	int err_code_read = i2c.read(0x31, data, 4, false); // request status + 3 data bytes
-	//evil bit hack to glue the data together
-	unsigned long press_counts = ((long)data[1]<<16) + ((long)data[2]<<8) + ((long)data[3]);
-	printf("Status: %d\n",data[0]);
-	printf("Pressure counts: %d\n",data[1]);
-	printf("Pressure counts: %d\n",data[2]);
-	printf("Pressure counts: %d\n",data[3]);
-	// do math from datasheet
-	unsigned long pressure = press_counts;
-  pressure -= 419430;
-  pressure *= 300;
-  pressure /= (3774874-419430); 
-  return pressure;
+int main() {
+    // Chip must be deselected
+    cs = 1;
+ 
+    // Setup the spi for 8 bit data, high steady state clock,
+    // second edge capture, with a 1MHz clock rate
+    spi.format(8,0);
+    spi.frequency(200'000);
+ 
+    while (1) {
+	  double p = getPressure();
+	  printf("Pressure: %.17g\n",p);
+      thread_sleep_for(1'000);
+
+    }
 }
